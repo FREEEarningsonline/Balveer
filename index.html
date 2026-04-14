@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Episode Viewer</title>
+
+    <!-- Firebase SDK v9 (using compat versions for global namespace access) -->
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #1d1d1d;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding-bottom: 20px;
+            box-sizing: border-box;
+        }
+
+        #player {
+            background-color: #000;
+            width: 90%;
+            max-width: 800px;
+            height: 450px; /* Consistent height for player container */
+            display: flex; /* Use flexbox to center message/video */
+            justify-content: center;
+            align-items: center;
+            border-radius: 10px;
+            position: relative;
+            margin-top: 20px;
+            overflow: hidden; /* Ensure content doesn't spill out */
+        }
+
+        #player-initial-message {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #e01f28;
+            text-align: center;
+            padding: 20px;
+            z-index: 1; /* Ensure it sits above the videoDisplayArea when active */
+        }
+
+        #videoDisplayArea { /* This div will contain either <video> or <iframe> */
+            width: 100%;
+            height: 100%;
+            display: none; /* Hidden by default */
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        #videoDisplayArea iframe,
+        #videoDisplayArea video {
+            width: 100%;
+            height: 100%;
+            border: none; /* No border for iframes */
+            border-radius: 10px; /* Apply to dynamic video tag */
+            object-fit: contain; /* For video tag */
+        }
+
+
+        #episode-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            width: 90%;
+            max-width: 800px;
+            margin-top: 30px;
+        }
+
+        .episode-btn {
+            background-color: #333;
+            color: #fff;
+            padding: 15px;
+            text-align: center;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s ease, transform 0.2s ease;
+            border: none;
+        }
+
+        .episode-btn:hover {
+            background-color: #444;
+            transform: translateY(-2px);
+        }
+
+        .episode-btn:active {
+            transform: translateY(0);
+        }
+
+        .episode-btn.locked { /* Style for locked buttons */
+            background-color: #555;
+            opacity: 0.8;
+        }
+        .episode-btn.locked:hover:not([disabled]) { /* Slightly lighter on hover to show it's clickable */
+            background-color: #666; 
+            transform: translateY(-2px); /* Still show a hover effect */
+        }
+        .episode-btn.locked[disabled] { /* Style for disabled locked buttons (during countdown) */
+            cursor: not-allowed;
+            background-color: #444; /* Darker to indicate disabled */
+            transform: none;
+        }
+        .episode-btn.locked span.lock-icon {
+            margin-left: 5px;
+            font-size: 0.9em;
+            vertical-align: middle;
+        }
+        .episode-btn.locked .timer {
+            font-weight: bold;
+            color: #e01f28; /* Highlight timer */
+            margin-left: 5px;
+        }
+
+        .no-episodes-message {
+            text-align: center;
+            color: #ccc;
+            padding: 20px;
+            font-style: italic;
+            width: 100%;
+        }
+
+    </style>
+
+</head>
+<body>
+
+    <div id="player">
+        <div id="player-initial-message">Loading episodes...</div>
+        <div id="videoDisplayArea">
+            <!-- Video or iframe will be dynamically inserted here -->
+        </div>
+    </div>
+
+    <div id="episode-list">
+        <!-- Episodes will be dynamically loaded here -->
+    </div>
+
+    <!-- Link to your external JavaScript file -->
+    <script src="script.js"></script>
+
+</body>
+</html>
