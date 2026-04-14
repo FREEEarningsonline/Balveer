@@ -112,6 +112,46 @@
             object-fit: contain;
         }
 
+        /* NEW: Earning Display Card */
+        #earningDisplayCard {
+            background-color: #2e3a47; /* Dark blue/grey background */
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            padding: 20px;
+            margin-top: 20px;
+            width: 90%;
+            max-width: 450px;
+            text-align: center;
+            display: none; /* Hidden by default */
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        #earningMessage {
+            font-size: 1.2em;
+            color: #ffc107; /* Yellowish color for visibility */
+            font-weight: bold;
+            line-height: 1.5;
+        }
+
+        #earningProgressBarContainer {
+            width: 100%;
+            background-color: #4a5a6a; /* Darker bar background */
+            border-radius: 5px;
+            height: 8px;
+            overflow: hidden; /* Hide anything outside */
+        }
+
+        #earningProgressBar {
+            height: 100%;
+            width: 0%;
+            background-color: #e01f28; /* Red/orange progress color */
+            border-radius: 5px;
+            transition: width 0.9s linear; /* Smooth progress animation */
+        }
+        /* END NEW: Earning Display Card */
+
+
         /* --- Episode List Styles --- */
         #episode-list {
             display: grid;
@@ -272,7 +312,6 @@
     <div id="header">
         <div id="profile-section">
             <button class="icon-button" id="profileButton">👤</button>
-            <!-- User status will be "Guest" or "User" -->
             <span id="userStatus">Guest</span> 
         </div>
         <div id="wallet-section">
@@ -288,6 +327,16 @@
         </div>
     </div>
 
+    <!-- NEW: Earning Display Card HTML -->
+    <div id="earningDisplayCard">
+        <div id="earningMessage">Watch for <span id="earningTimer">--</span> seconds to earn <span id="earningAmount">PKR --</span>!</div>
+        <div id="earningProgressBarContainer">
+            <div id="earningProgressBar"></div>
+        </div>
+    </div>
+    <!-- END NEW: Earning Display Card -->
+
+
     <div id="episode-list">
         <!-- Episodes will be dynamically loaded here -->
     </div>
@@ -301,7 +350,6 @@
             <input type="password" id="authPassword" placeholder="Password" required>
             <button id="loginButton">Login</button>
             <button id="signUpButton" class="secondary-btn">Sign Up</button>
-            <!-- Logout button now appears only when logged in -->
             <button id="logoutButton" class="secondary-btn" style="display:none;">Logout</button>
             <p id="authError"></p>
         </div>
