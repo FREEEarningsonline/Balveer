@@ -27,14 +27,14 @@
             background-color: #000;
             width: 90%;
             max-width: 800px;
-            height: 450px; /* Consistent height for player container */
-            display: flex; /* Use flexbox to center message/video */
+            height: 450px;
+            display: flex;
             justify-content: center;
             align-items: center;
             border-radius: 10px;
             position: relative;
             margin-top: 20px;
-            overflow: hidden; /* Ensure content doesn't spill out */
+            overflow: hidden;
         }
 
         #player-initial-message {
@@ -43,13 +43,13 @@
             color: #e01f28;
             text-align: center;
             padding: 20px;
-            z-index: 1; /* Ensure it sits above the videoDisplayArea when active */
+            z-index: 1;
         }
 
-        #videoDisplayArea { /* This div will contain either <video> or <iframe> */
+        #videoDisplayArea {
             width: 100%;
             height: 100%;
-            display: none; /* Hidden by default */
+            display: none;
             position: absolute;
             top: 0;
             left: 0;
@@ -58,9 +58,9 @@
         #videoDisplayArea video {
             width: 100%;
             height: 100%;
-            border: none; /* No border for iframes */
-            border-radius: 10px; /* Apply to dynamic video tag */
-            object-fit: contain; /* For video tag */
+            border: none;
+            border-radius: 10px;
+            object-fit: contain;
         }
 
 
@@ -94,17 +94,17 @@
             transform: translateY(0);
         }
 
-        .episode-btn.locked { /* Style for locked buttons */
+        .episode-btn.locked {
             background-color: #555;
             opacity: 0.8;
         }
-        .episode-btn.locked:hover:not([disabled]) { /* Slightly lighter on hover to show it's clickable */
+        .episode-btn.locked:hover:not([disabled]) {
             background-color: #666; 
-            transform: translateY(-2px); /* Still show a hover effect */
+            transform: translateY(-2px);
         }
-        .episode-btn.locked[disabled] { /* Style for disabled locked buttons (during countdown) */
+        .episode-btn.locked[disabled] {
             cursor: not-allowed;
-            background-color: #444; /* Darker to indicate disabled */
+            background-color: #444;
             transform: none;
         }
         .episode-btn.locked span.lock-icon {
@@ -114,7 +114,7 @@
         }
         .episode-btn.locked .timer {
             font-weight: bold;
-            color: #e01f28; /* Highlight timer */
+            color: #e01f28;
             margin-left: 5px;
         }
 
