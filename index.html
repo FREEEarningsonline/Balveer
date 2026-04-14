@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Episode Viewer</title>
 
-    <!-- Firebase SDK v9 (using compat versions for global namespace access) -->
+    <!-- Firebase SDK v9 (compat versions) for App, Database, AND Auth -->
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
 
     <style>
         body {
@@ -23,6 +24,50 @@
             box-sizing: border-box;
         }
 
+        /* --- Header Styles --- */
+        #header {
+            width: 90%;
+            max-width: 800px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 0;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #444;
+        }
+
+        #profile-section, #wallet-section {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .icon-button {
+            background: none;
+            border: none;
+            color: #fff;
+            font-size: 1.5em;
+            cursor: pointer;
+            padding: 5px;
+            border-radius: 5px;
+            transition: background-color 0.2s;
+        }
+        .icon-button:hover {
+            background-color: #3a3a3a;
+        }
+
+        #userStatus {
+            font-size: 0.9em;
+            color: #ccc;
+        }
+
+        #walletBalance {
+            font-weight: bold;
+            color: #e01f28; /* PKR color */
+            font-size: 1.1em;
+        }
+        
+        /* --- Player Styles --- */
         #player {
             background-color: #000;
             width: 90%;
@@ -63,7 +108,7 @@
             object-fit: contain;
         }
 
-
+        /* --- Episode List Styles --- */
         #episode-list {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -112,7 +157,7 @@
             font-size: 0.9em;
             vertical-align: middle;
         }
-        .episode-btn.locked .timer {
+        .episode-btn.locked .timer { /* This style is no longer strictly needed but kept for safety */
             font-weight: bold;
             color: #e01f28;
             margin-left: 5px;
@@ -126,10 +171,110 @@
             width: 100%;
         }
 
+        /* --- Login/Signup Modal Styles --- */
+        .modal {
+            display: none; /* Hidden by default */
+            position: fixed; /* Stay in place */
+            z-index: 1000; /* Sit on top */
+            left: 0;
+            top: 0;
+            width: 100%; /* Full width */
+            height: 100%; /* Full height */
+            overflow: auto; /* Enable scroll if needed */
+            background-color: rgba(0,0,0,0.6); /* Black w/ opacity */
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-content {
+            background-color: #333;
+            margin: auto;
+            padding: 20px;
+            border: 1px solid #888;
+            border-radius: 10px;
+            width: 80%;
+            max-width: 400px;
+            position: relative;
+        }
+
+        .close-button {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            position: absolute;
+            top: 10px;
+            right: 15px;
+        }
+
+        .close-button:hover,
+        .close-button:focus {
+            color: #e01f28;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .modal-content h2 {
+            text-align: center;
+            color: #e01f28;
+            margin-bottom: 20px;
+        }
+
+        .modal-content input[type="email"],
+        .modal-content input[type="password"] {
+            width: calc(100% - 20px);
+            padding: 10px;
+            margin-bottom: 15px;
+            border-radius: 5px;
+            border: 1px solid #555;
+            background-color: #444;
+            color: white;
+            box-sizing: border-box;
+        }
+
+        .modal-content button {
+            width: 100%;
+            padding: 10px;
+            margin-top: 10px;
+            border-radius: 5px;
+            border: none;
+            background-color: #e01f28;
+            color: white;
+            font-size: 1em;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        .modal-content button:hover {
+            background-color: #c01a22;
+        }
+        .modal-content button.secondary-btn {
+            background-color: #555;
+        }
+        .modal-content button.secondary-btn:hover {
+            background-color: #666;
+        }
+        #authError {
+            color: #dc3545;
+            text-align: center;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+
     </style>
 
 </head>
 <body>
+
+    <div id="header">
+        <div id="profile-section">
+            <button class="icon-button" id="profileButton">👤</button>
+            <span id="userStatus">Guest</span>
+        </div>
+        <div id="wallet-section">
+            <span>Wallet:</span>
+            <span id="walletBalance">PKR 0.00</span>
+        </div>
+    </div>
 
     <div id="player">
         <div id="player-initial-message">Loading episodes...</div>
@@ -140,6 +285,20 @@
 
     <div id="episode-list">
         <!-- Episodes will be dynamically loaded here -->
+    </div>
+
+    <!-- Login/Signup Modal -->
+    <div id="authModal" class="modal">
+        <div class="modal-content">
+            <span class="close-button" id="closeModalButton">&times;</span>
+            <h2 id="modalTitle">Login</h2>
+            <input type="email" id="authEmail" placeholder="Email" required>
+            <input type="password" id="authPassword" placeholder="Password" required>
+            <button id="loginButton">Login</button>
+            <button id="signUpButton" class="secondary-btn">Sign Up</button>
+            <button id="logoutButton" class="secondary-btn" style="display:none;">Logout</button>
+            <p id="authError"></p>
+        </div>
     </div>
 
     <!-- Link to your external JavaScript file -->
