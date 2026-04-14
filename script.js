@@ -12,25 +12,48 @@ const firebaseConfig = {
 // Initialize Firebase (using the compat version)
 const app = firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
+const auth = firebase.auth();
 
 // DOM elements
 const playerInitialMessage = document.getElementById('player-initial-message');
 const episodeListDiv = document.getElementById('episode-list');
 const videoDisplayArea = document.getElementById('videoDisplayArea');
 
+// Header elements
+const profileButton = document.getElementById('profileButton');
+const userStatusSpan = document.getElementById('userStatus');
+const walletBalanceSpan = document.getElementById('walletBalance');
+
+// Auth modal elements
+const authModal = document.getElementById('authModal');
+const closeModalButton = document.getElementById('closeModalButton');
+const modalTitle = document.getElementById('modalTitle');
+const authEmailInput = document.getElementById('authEmail');
+const authPasswordInput = document.getElementById('authPassword');
+const loginButton = document.getElementById('loginButton');
+const signUpButton = document.getElementById('signUpButton');
+const logoutButton = document.getElementById('logoutButton');
+const authErrorP = document.getElementById('authError');
+
 // --- Ad and Unlocking Logic Variables ---
-const adUrl = "https://toolswebsite205.blogspot.com";
-const adWatchTime = 10000; // 10 seconds for the "ad"
+let adUrl = null; // Will be loaded from Firebase
+const adWatchTime = 10000; // 10 seconds for the "ad" (used for ad window duration, not unlock delay)
 const localStorageKey_UnlockedEpisodes = "unlockedEpisodeIds";
-const localStorageKey_LastIP = "lastKnownUserIP"; // To store last known IP for immediate checks
-const firebaseNode_IPUnlocks = "ipUnlocks"; // New Firebase node for IP-based unlocks
+const localStorageKey_LastIP = "lastKnownUserIP";
+const firebaseNode_IPUnlocks = "ipUnlocks";
+const firebaseNode_Settings = "settings";
 const IP_UNLOCK_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+const EARNING_COOLDOWN_MS = 24 * 60 * 60 * 1000; // User can earn from same episode every 24 hours
 
 let unlockedEpisodeIds = JSON.parse(localStorage.getItem(localStorageKey_UnlockedEpisodes) || '[]');
-let currentlyCountingDownEpisodeId = null; // Track episode currently showing a timer
-let activeTimers = {}; // Stores setInterval IDs for active timers
-let episodeDataStore = {}; // To store all fetched episode data for easy access
-let currentPublicIP = null; // To store the user's public IP once fetched
+// let currentlyCountingDownEpisodeId = null; // No longer needed for countdown logic
+// let activeTimers = {}; // No longer needed for countdown logic
+let episodeDataStore = {}; // Store all fetched episode data
+let currentPublicIP = null; // User's public IP
+let currentUser = null;
+let userWalletListener = null;
+let episodeEarningTimeout = null;
+
 
 // --- Helper Functions ---
 function updatePlayerMessage(message, isError = false) {
@@ -54,7 +77,7 @@ function getYouTubeEmbedUrl(url) {
     return null;
 }
 
-function playEpisode(url) {
+function playEpisode(url, episodeId) {
     if (!url) {
         console.error("Attempted to play episode with null/undefined URL.");
         updatePlayerMessage("Error: Video URL is missing.", true);
@@ -67,11 +90,16 @@ function playEpisode(url) {
         return;
     }
 
+    if (episodeEarningTimeout) {
+        clearTimeout(episodeEarningTimeout);
+        episodeEarningTimeout = null;
+    }
+
     if (playerInitialMessage) {
         playerInitialMessage.style.display = 'none';
     }
     videoDisplayArea.style.display = 'block';
-    videoDisplayArea.innerHTML = ''; // Clear previous content
+    videoDisplayArea.innerHTML = '';
 
     const youtubeEmbedUrl = getYouTubeEmbedUrl(url);
 
@@ -89,7 +117,7 @@ function playEpisode(url) {
         console.log("Playing direct video URL (assuming MP4):", url);
         const videoElement = document.createElement('video');
         videoElement.setAttribute('controls', '');
-        videoElement.setAttribute('autoplay', ''); // Attempt autoplay
+        videoElement.setAttribute('autoplay', '');
         videoElement.setAttribute('width', '100%');
         videoElement.setAttribute('height', '100%');
         videoElement.style.borderRadius = '10px';
@@ -107,12 +135,15 @@ function playEpisode(url) {
             console.warn("Autoplay was prevented for direct video:", error);
         });
     }
+
+    if (currentUser && episodeId && episodeDataStore[episodeId]?.earningTime && episodeDataStore[episodeId]?.pkrPerWatch) {
+        trackEpisodeEarning(episodeId, episodeDataStore[episodeId].earningTime, episodeDataStore[episodeId].pkrPerWatch);
+    }
 }
 
-// NEW: Function to get the user's public IP address
 async function getPublicIP() {
     if (currentPublicIP) {
-        return currentPublicIP; // Return cached IP if available
+        return currentPublicIP;
     }
     try {
         const response = await fetch('https://api.ipify.org?format=json');
@@ -128,17 +159,14 @@ async function getPublicIP() {
             console.warn("Using last known IP from local storage due to API failure.");
             return currentPublicIP;
         }
-        alert("Could not determine your public IP. IP-based unlocks might not work.");
         return null;
     }
 }
 
-// NEW: Function to check if an episode is unlocked by IP for 24 hours
 async function isEpisodeUnlockedByIP(episodeId) {
     const ip = await getPublicIP();
     if (!ip) return false;
 
-    // Encode IP for Firebase key safety (dots are not allowed in Firebase keys)
     const encodedIp = encodeURIComponent(ip).replace(/\./g, '%2E');
 
     try {
@@ -153,7 +181,6 @@ async function isEpisodeUnlockedByIP(episodeId) {
                 return true;
             } else {
                 console.log(`Episode ${episodeId} IP unlock for ${ip} expired.`);
-                // Optionally remove expired entry from Firebase (cleanup)
                 db.ref(`${firebaseNode_IPUnlocks}/${episodeId}/${encodedIp}`).remove().catch(e => console.error("Error removing expired IP unlock:", e));
             }
         }
@@ -165,85 +192,54 @@ async function isEpisodeUnlockedByIP(episodeId) {
 
 // --- Ad and Unlock Logic ---
 
-async function attemptUnlock(episodeId, episodeTitle) { // Made async
+async function attemptUnlock(episodeId, episodeTitle) {
+    // If adUrl is not set in Firebase, then all non-free episodes are effectively free
+    if (!adUrl) {
+        console.log("No ad URL configured. Unlocking without ad.");
+        finishAdWatching(episodeId, null, true); // Pass true for noAdMode, no adWindow needed
+        return;
+    }
+
     if (unlockedEpisodeIds.includes(episodeId)) {
-        playEpisode(episodeDataStore[episodeId].url);
+        playEpisode(episodeDataStore[episodeId].url, episodeId);
         return;
     }
     
-    // Check if already unlocked by IP before starting timer/ad
     const isCurrentlyIpUnlocked = await isEpisodeUnlockedByIP(episodeId);
     if (isCurrentlyIpUnlocked) {
-        // If IP unlocked, but local storage didn't know, add to local storage too for immediate access
         if (!unlockedEpisodeIds.includes(episodeId)) {
             unlockedEpisodeIds.push(episodeId);
             localStorage.setItem(localStorageKey_UnlockedEpisodes, JSON.stringify(unlockedEpisodeIds));
             alert(`"${episodeTitle}" is IP unlocked! Playing now.`);
-            loadEpisodesRealtime(true, episodeId); // Re-render and play
+            loadEpisodesRealtime(true, episodeId);
         } else {
-            playEpisode(episodeDataStore[episodeId].url);
+            playEpisode(episodeDataStore[episodeId].url, episodeId);
         }
         return;
     }
 
-
-    // Prevent multiple countdowns at once
-    if (currentlyCountingDownEpisodeId && currentlyCountingDownEpisodeId !== episodeId) {
-        alert("Please wait for the current episode to unlock or refresh the page.");
-        return;
-    }
-    if (activeTimers[episodeId]) { // If timer already active for THIS episode
-        console.log("Timer already active for this episode.");
-        return;
-    }
-
-    currentlyCountingDownEpisodeId = episodeId;
-
-    // Find the specific button for this episode
-    const episodeButton = document.querySelector(`.episode-btn[data-episode-id="${episodeId}"]`);
-    if (!episodeButton) {
-        console.error("Could not find episode button for ID:", episodeId);
-        alert("An error occurred. Please try again or refresh the page.");
-        currentlyCountingDownEpisodeId = null;
-        return;
-    }
-
-    // Disable the button to prevent multiple clicks during countdown
-    episodeButton.disabled = true;
-
-    let timeLeft = adWatchTime / 1000;
-    episodeButton.innerHTML = `${episodeTitle} <span class="lock-icon">🔒 (<span class="timer">${timeLeft}s</span>)</span>`;
-
+    // --- INSTANT UNLOCK LOGIC (No timer) ---
+    // Open ad window
     const adWindow = window.open(adUrl, '_blank');
     if (!adWindow) {
         alert("Pop-up blocked! Please allow pop-ups for this site to watch the ad and unlock the episode.");
         updatePlayerMessage("Pop-up blocked. Allow pop-ups to watch ad.", true);
-        episodeButton.disabled = false; // Re-enable button
-        episodeButton.innerHTML = `${episodeTitle} <span class="lock-icon">🔒</span>`; // Reset text
-        currentlyCountingDownEpisodeId = null;
         return;
     }
 
-    // Start countdown on the button
-    activeTimers[episodeId] = setInterval(() => {
-        timeLeft--;
-        if (timeLeft > 0) {
-            episodeButton.innerHTML = `${episodeTitle} <span class="lock-icon">🔒 (<span class="timer">${timeLeft}s</span>)</span>`;
-        } else {
-            clearInterval(activeTimers[episodeId]);
-            delete activeTimers[episodeId]; // Remove from active timers
-            finishAdWatching(episodeId, adWindow); // Pass adWindow to close it
-        }
-    }, 1000);
+    // Immediately trigger finishAdWatching, no delay.
+    // The ad window will still be opened and attempt to close after adWatchTime.
+    finishAdWatching(episodeId, adWindow, false); // Pass false for noAdMode as ad was opened.
 }
 
-async function finishAdWatching(episodeId, adWindow = null) { // Made async
-    if (currentlyCountingDownEpisodeId === episodeId) {
-        // Add to unlocked list in local storage
-        unlockedEpisodeIds.push(episodeId);
-        localStorage.setItem(localStorageKey_UnlockedEpisodes, JSON.stringify(unlockedEpisodeIds));
+async function finishAdWatching(episodeId, adWindow = null, noAdMode = false) {
+    // This function is now called immediately after opening the ad (or if noAdMode)
+    // No need to check currentlyCountingDownEpisodeId here as there's no countdown.
 
-        // NEW: Record IP unlock in Firebase
+    unlockedEpisodeIds.push(episodeId);
+    localStorage.setItem(localStorageKey_UnlockedEpisodes, JSON.stringify(unlockedEpisodeIds));
+
+    if (!noAdMode) { // Only record IP unlock if ad was actually opened
         const ip = await getPublicIP();
         if (ip) {
             const encodedIp = encodeURIComponent(ip).replace(/\./g, '%2E');
@@ -261,38 +257,237 @@ async function finishAdWatching(episodeId, adWindow = null) { // Made async
         }
 
         alert(`"${episodeDataStore[episodeId].title}" unlocked! Playing now.`);
-
-        // Attempt to close the ad tab if it's still open
-        if (adWindow && !adWindow.closed) {
-            try {
-                adWindow.close();
-            } catch (e) {
-                console.warn("Could not close ad window:", e);
-                // alert("Please manually close the ad tab to continue.");
+    } else {
+        // This branch is for when adUrl is null from admin, instant unlock without ad pop-up.
+        alert(`"${episodeDataStore[episodeId].title}" unlocked automatically (no ad configured)! Playing now.`);
+    }
+    
+    // Schedule the ad window to close after adWatchTime, even if unlock is instant.
+    if (adWindow) {
+        setTimeout(() => {
+            if (!adWindow.closed) {
+                try {
+                    adWindow.close();
+                } catch (e) {
+                    console.warn("Could not close ad window after timeout:", e);
+                }
             }
+        }, adWatchTime);
+    }
+
+    // Since unlock is instant, we want to re-render and play.
+    loadEpisodesRealtime(true, episodeId);
+}
+
+// --- Earning Logic ---
+
+async function trackEpisodeEarning(episodeId, earningTimeSeconds, pkrAmount) {
+    if (!currentUser) {
+        console.log("User not logged in, cannot earn.");
+        return;
+    }
+
+    if (!episodeDataStore[episodeId] || !episodeDataStore[episodeId].earningTime || !episodeDataStore[episodeId].pkrPerWatch) {
+        console.warn("Episode does not have earning configuration:", episodeId);
+        return;
+    }
+
+    const userId = currentUser.uid;
+    const userEarningsRef = db.ref(`users/${userId}/earnings/${episodeId}`);
+
+    const snapshot = await userEarningsRef.once('value');
+    if (snapshot.exists()) {
+        const lastEarnedAt = snapshot.val().lastEarnedAt;
+        if (Date.now() - lastEarnedAt < EARNING_COOLDOWN_MS) {
+            console.log(`Already earned from episode ${episodeId} recently. Cooldown active.`);
+            return;
         }
+    }
 
-        currentlyCountingDownEpisodeId = null; // Reset
+    console.log(`Starting earning timer for episode ${episodeId} for ${earningTimeSeconds} seconds.`);
+    
+    if (episodeEarningTimeout) {
+        clearTimeout(episodeEarningTimeout);
+    }
 
-        // Re-render episode list to update button state and play the episode
-        loadEpisodesRealtime(true, episodeId); // Pass episodeId to play it
+    episodeEarningTimeout = setTimeout(async () => {
+        try {
+            await db.ref(`users/${userId}/walletBalance`).transaction((currentBalance) => {
+                const newBalance = (currentBalance || 0) + pkrAmount;
+                console.log(`User ${userId} earned PKR ${pkrAmount}. New balance: ${newBalance}`);
+                return newBalance;
+            });
+
+            await userEarningsRef.set({ lastEarnedAt: Date.now() }); // FIXED TYPO: Date.now()
+
+            alert(`You earned PKR ${pkrAmount.toFixed(2)} for watching "${episodeDataStore[episodeId].title}"!`);
+
+        } catch (error) {
+            console.error("Error processing earning:", error);
+            alert("Error while processing earnings.");
+        } finally {
+            episodeEarningTimeout = null;
+        }
+    }, earningTimeSeconds * 1000);
+}
+
+
+// --- Authentication Logic ---
+
+function showAuthModal(mode) {
+    authErrorP.textContent = '';
+    authEmailInput.value = '';
+    authPasswordInput.value = '';
+
+    if (mode === 'login') {
+        modalTitle.textContent = 'Login';
+        loginButton.style.display = 'block';
+        signUpButton.style.display = 'block';
+        logoutButton.style.display = 'none';
+    } else if (mode === 'signup') {
+        modalTitle.textContent = 'Sign Up';
+        loginButton.style.display = 'block';
+        signUpButton.style.display = 'block';
+        logoutButton.style.display = 'none';
+    } else if (mode === 'logout_prompt') {
+        modalTitle.textContent = `Logged in as: ${currentUser.email}`;
+        loginButton.style.display = 'none';
+        signUpButton.style.display = 'none';
+        logoutButton.style.display = 'block';
+    }
+    authModal.style.display = 'flex';
+}
+
+function hideAuthModal() {
+    authModal.style.display = 'none';
+}
+
+async function handleLogin() {
+    const email = authEmailInput.value;
+    const password = authPasswordInput.value;
+    authErrorP.textContent = '';
+
+    if (!email || !password) {
+        authErrorP.textContent = 'Please enter email and password.';
+        return;
+    }
+
+    try {
+        await auth.signInWithEmailAndPassword(email, password);
+        hideAuthModal();
+    } catch (error) {
+        console.error("Login error:", error);
+        authErrorP.textContent = `Login failed: ${error.message}`;
     }
 }
 
-// --- Real-time Data Loading ---
-// Added optional parameters for playing a specific episode after unlock
-async function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdToPlay = null) { // Made async
-    // Clear any active timers before re-rendering the list
-    for (const timerId in activeTimers) {
-        clearInterval(activeTimers[timerId]);
-        delete activeTimers[timerId];
-    }
-    currentlyCountingDownEpisodeId = null; // Reset current countdown
+async function handleSignUp() {
+    const email = authEmailInput.value;
+    const password = authPasswordInput.value;
+    authErrorP.textContent = '';
 
-    db.ref('episodes').on('value', async function(snapshot) { // Made async
+    if (!email || !password) {
+        authErrorP.textContent = 'Please enter email and password.';
+        return;
+    }
+
+    try {
+        const userCredential = await auth.createUserWithEmailAndPassword(email, password);
+        await db.ref(`users/${userCredential.user.uid}`).set({
+            email: userCredential.user.email,
+            walletBalance: 0.00,
+            createdAt: Date.now()
+        });
+        hideAuthModal();
+        alert('Account created successfully! You are now logged in.');
+    } catch (error) {
+        console.error("Sign up error:", error);
+        authErrorP.textContent = `Sign up failed: ${error.message}`;
+    }
+}
+
+async function handleLogout() {
+    try {
+        await auth.signOut();
+        hideAuthModal();
+        alert('Logged out successfully.');
+    } catch (error) {
+        console.error("Logout error:", error);
+        authErrorP.textContent = `Logout failed: ${error.message}`;
+    }
+}
+
+function updateAuthUI(user) {
+    if (user) {
+        currentUser = user;
+        updateAuthUI(user);
+        listenToUserWallet(user.uid);
+    } else {
+        currentUser = null;
+        updateAuthUI(null);
+        stopListeningToUserWallet();
+        if (episodeEarningTimeout) {
+            clearTimeout(episodeEarningTimeout);
+            episodeEarningTimeout = null;
+        }
+    }
+}
+
+function listenToUserWallet(uid) {
+    if (userWalletListener) {
+        stopListeningToUserWallet();
+    }
+    userWalletListener = db.ref(`users/${uid}/walletBalance`).on('value', (snapshot) => {
+        const balance = snapshot.val();
+        walletBalanceSpan.textContent = `PKR ${(balance || 0).toFixed(2)}`;
+    }, (error) => {
+        console.error("Wallet listener error:", error);
+        walletBalanceSpan.textContent = "Error";
+    });
+}
+
+function stopListeningToUserWallet() {
+    if (userWalletListener) {
+        db.ref(`users/${currentUser.uid}/walletBalance`).off('value', userWalletListener);
+        userWalletListener = null;
+    }
+    walletBalanceSpan.textContent = 'PKR 0.00';
+}
+
+// Load general settings (like ad URL) from Firebase
+async function loadSettings() {
+    try {
+        const snapshot = await db.ref(firebaseNode_Settings).once('value');
+        if (snapshot.exists()) {
+            const settings = snapshot.val();
+            if (settings.adUrl && settings.adUrl.trim() !== '') {
+                adUrl = settings.adUrl.trim();
+                console.log("Ad URL loaded from Firebase:", adUrl);
+            } else {
+                adUrl = null;
+                console.log("No Ad URL configured in Firebase. Locked episodes will unlock without ad.");
+            }
+        } else {
+            adUrl = null;
+            console.log("No settings node found in Firebase. Locked episodes will unlock without ad.");
+        }
+    } catch (error) {
+        console.error("Error loading settings from Firebase:", error);
+        adUrl = null;
+        console.log("Failed to load Ad URL. Locked episodes will unlock without ad.");
+    }
+}
+
+
+// --- Real-time Data Loading ---
+async function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdToPlay = null) {
+    // No active timers to clear as there's no countdown
+    // currentlyCountingDownEpisodeId = null; // Reset current countdown
+
+    db.ref('episodes').on('value', async function(snapshot) {
         console.log("Firebase snapshot received:", snapshot.val());
         const episodesData = snapshot.val();
-        window.episodeDataStore = episodesData; // Store globally for easy access
+        window.episodeDataStore = episodesData;
         let episodesListHtml = '';
         let firstEpisodeUrl = null;
         const episodeKeys = episodesData ? Object.keys(episodesData) : [];
@@ -301,25 +496,22 @@ async function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdTo
             const firstEpisodeKey = episodeKeys[0];
             firstEpisodeUrl = episodesData[firstEpisodeKey]?.url;
 
-            for (const episodeId of episodeKeys) { // Changed to for...of to allow await inside loop
+            for (const episodeId of episodeKeys) {
                 const episode = episodesData[episodeId];
                 if (episode && typeof episode.title === 'string' && typeof episode.url === 'string' && episode.title.trim() !== '' && episode.url.trim() !== '') {
                     const escapedTitle = episode.title.replace(/'/g, "\\'");
                     const escapedUrl = episode.url.replace(/'/g, "\\'");
                     
-                    // Each button needs a unique data-episode-id for easy lookup
                     const buttonAttributes = `class="episode-btn" data-episode-id="${episodeId}"`;
 
-                    // Check if episode is free, OR in local storage unlocked list, OR IP unlocked
-                    const isIpUnlocked = await isEpisodeUnlockedByIP(episodeId); // Await IP unlock check
-                    if (episode.isFree || unlockedEpisodeIds.includes(episodeId) || isIpUnlocked) {
+                    const isIpUnlocked = await isEpisodeUnlockedByIP(episodeId);
+                    if (episode.isFree || unlockedEpisodeIds.includes(episodeId) || isIpUnlocked || !adUrl) {
                         episodesListHtml += `
                             <div class="episode-container">
-                                <button ${buttonAttributes} onclick="playEpisode('${escapedUrl}')">${episode.title}</button>
+                                <button ${buttonAttributes} onclick="playEpisode('${escapedUrl}', '${episodeId}')">${episode.title}</button>
                             </div>
                         `;
                     } else {
-                        // Locked non-free episode, requires ad to unlock
                         episodesListHtml += `
                             <div class="episode-container">
                                 <button ${buttonAttributes} class="episode-btn locked" onclick="attemptUnlock('${episodeId}', '${escapedTitle}')">
@@ -331,9 +523,9 @@ async function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdTo
                 } else {
                     console.warn(`Skipping malformed or incomplete episode with ID: ${episodeId}`, episode);
                 }
-            } // End of for...of loop
+            }
 
-            if (currentlyCountingDownEpisodeId === null && videoDisplayArea.style.display !== 'block') {
+            if (videoDisplayArea.style.display !== 'block') { // Check if video area is empty
                 updatePlayerMessage("Select an Episode to Play", false);
             }
         } else {
@@ -343,11 +535,10 @@ async function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdTo
 
         episodeListDiv.innerHTML = episodesListHtml;
 
-        // Auto-play the first episode OR the newly unlocked episode
         if (playAfterUnlock && unlockedEpisodeIdToPlay && episodeDataStore[unlockedEpisodeIdToPlay]) {
-            playEpisode(episodeDataStore[unlockedEpisodeIdToPlay].url);
+            playEpisode(episodeDataStore[unlockedEpisodeIdToPlay].url, unlockedEpisodeIdToPlay);
         } else if (!playAfterUnlock && firstEpisodeUrl && videoDisplayArea.innerHTML === '') {
-            playEpisode(firstEpisodeUrl);
+            playEpisode(firstEpisodeUrl, episodeKeys[0]);
         }
 
     }, function(error) {
@@ -357,9 +548,37 @@ async function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdTo
     });
 }
 
+// --- Event Listeners ---
+profileButton.addEventListener('click', () => {
+    if (currentUser) {
+        showAuthModal('logout_prompt');
+    } else {
+        showAuthModal('login');
+    }
+});
+closeModalButton.addEventListener('click', hideAuthModal);
+loginButton.addEventListener('click', handleLogin);
+signUpButton.addEventListener('click', handleSignUp);
+logoutButton.addEventListener('click', handleLogout);
+
 // Initial setup on DOMContentLoaded
 document.addEventListener('DOMContentLoaded', () => {
     updatePlayerMessage("Loading episodes...", false);
-    // Call getPublicIP early to potentially cache it, then load episodes
-    getPublicIP().then(() => loadEpisodesRealtime()); 
+    loadSettings().then(() => getPublicIP()).then(() => loadEpisodesRealtime()); 
+});
+
+auth.onAuthStateChanged(user => {
+    if (user) {
+        currentUser = user;
+        updateAuthUI(user);
+        listenToUserWallet(user.uid);
+    } else {
+        currentUser = null;
+        updateAuthUI(null);
+        stopListeningToUserWallet();
+        if (episodeEarningTimeout) {
+            clearTimeout(episodeEarningTimeout);
+            episodeEarningTimeout = null;
+        }
+    }
 });
