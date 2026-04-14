@@ -22,11 +22,15 @@ const videoDisplayArea = document.getElementById('videoDisplayArea');
 const adUrl = "https://toolswebsite205.blogspot.com";
 const adWatchTime = 10000; // 10 seconds for the "ad"
 const localStorageKey_UnlockedEpisodes = "unlockedEpisodeIds";
+const localStorageKey_LastIP = "lastKnownUserIP"; // To store last known IP for immediate checks
+const firebaseNode_IPUnlocks = "ipUnlocks"; // New Firebase node for IP-based unlocks
+const IP_UNLOCK_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 
 let unlockedEpisodeIds = JSON.parse(localStorage.getItem(localStorageKey_UnlockedEpisodes) || '[]');
 let currentlyCountingDownEpisodeId = null; // Track episode currently showing a timer
 let activeTimers = {}; // Stores setInterval IDs for active timers
 let episodeDataStore = {}; // To store all fetched episode data for easy access
+let currentPublicIP = null; // To store the user's public IP once fetched
 
 // --- Helper Functions ---
 function updatePlayerMessage(message, isError = false) {
@@ -105,13 +109,83 @@ function playEpisode(url) {
     }
 }
 
+// NEW: Function to get the user's public IP address
+async function getPublicIP() {
+    if (currentPublicIP) {
+        return currentPublicIP; // Return cached IP if available
+    }
+    try {
+        const response = await fetch('https://api.ipify.org?format=json');
+        const data = await response.json();
+        currentPublicIP = data.ip;
+        localStorage.setItem(localStorageKey_LastIP, currentPublicIP);
+        console.log("Fetched public IP:", currentPublicIP);
+        return currentPublicIP;
+    } catch (error) {
+        console.error("Failed to fetch public IP from API:", error);
+        currentPublicIP = localStorage.getItem(localStorageKey_LastIP);
+        if (currentPublicIP) {
+            console.warn("Using last known IP from local storage due to API failure.");
+            return currentPublicIP;
+        }
+        alert("Could not determine your public IP. IP-based unlocks might not work.");
+        return null;
+    }
+}
+
+// NEW: Function to check if an episode is unlocked by IP for 24 hours
+async function isEpisodeUnlockedByIP(episodeId) {
+    const ip = await getPublicIP();
+    if (!ip) return false;
+
+    // Encode IP for Firebase key safety (dots are not allowed in Firebase keys)
+    const encodedIp = encodeURIComponent(ip).replace(/\./g, '%2E');
+
+    try {
+        const snapshot = await db.ref(`${firebaseNode_IPUnlocks}/${episodeId}/${encodedIp}`).once('value');
+        if (snapshot.exists()) {
+            const unlockData = snapshot.val();
+            const unlockedAt = unlockData.unlockedAt;
+            const currentTime = Date.now();
+
+            if (currentTime - unlockedAt < IP_UNLOCK_DURATION_MS) {
+                console.log(`Episode ${episodeId} is IP unlocked for ${ip} until ${new Date(unlockedAt + IP_UNLOCK_DURATION_MS).toLocaleString()}`);
+                return true;
+            } else {
+                console.log(`Episode ${episodeId} IP unlock for ${ip} expired.`);
+                // Optionally remove expired entry from Firebase (cleanup)
+                db.ref(`${firebaseNode_IPUnlocks}/${episodeId}/${encodedIp}`).remove().catch(e => console.error("Error removing expired IP unlock:", e));
+            }
+        }
+    } catch (error) {
+        console.error("Error checking IP unlock status in Firebase:", error);
+    }
+    return false;
+}
+
 // --- Ad and Unlock Logic ---
 
-function attemptUnlock(episodeId, episodeTitle) {
+async function attemptUnlock(episodeId, episodeTitle) { // Made async
     if (unlockedEpisodeIds.includes(episodeId)) {
         playEpisode(episodeDataStore[episodeId].url);
         return;
     }
+    
+    // Check if already unlocked by IP before starting timer/ad
+    const isCurrentlyIpUnlocked = await isEpisodeUnlockedByIP(episodeId);
+    if (isCurrentlyIpUnlocked) {
+        // If IP unlocked, but local storage didn't know, add to local storage too for immediate access
+        if (!unlockedEpisodeIds.includes(episodeId)) {
+            unlockedEpisodeIds.push(episodeId);
+            localStorage.setItem(localStorageKey_UnlockedEpisodes, JSON.stringify(unlockedEpisodeIds));
+            alert(`"${episodeTitle}" is IP unlocked! Playing now.`);
+            loadEpisodesRealtime(true, episodeId); // Re-render and play
+        } else {
+            playEpisode(episodeDataStore[episodeId].url);
+        }
+        return;
+    }
+
 
     // Prevent multiple countdowns at once
     if (currentlyCountingDownEpisodeId && currentlyCountingDownEpisodeId !== episodeId) {
@@ -163,11 +237,28 @@ function attemptUnlock(episodeId, episodeTitle) {
     }, 1000);
 }
 
-function finishAdWatching(episodeId, adWindow = null) {
+async function finishAdWatching(episodeId, adWindow = null) { // Made async
     if (currentlyCountingDownEpisodeId === episodeId) {
-        // Add to unlocked list
+        // Add to unlocked list in local storage
         unlockedEpisodeIds.push(episodeId);
         localStorage.setItem(localStorageKey_UnlockedEpisodes, JSON.stringify(unlockedEpisodeIds));
+
+        // NEW: Record IP unlock in Firebase
+        const ip = await getPublicIP();
+        if (ip) {
+            const encodedIp = encodeURIComponent(ip).replace(/\./g, '%2E');
+            try {
+                await db.ref(`${firebaseNode_IPUnlocks}/${episodeId}/${encodedIp}`).set({
+                    unlockedAt: Date.now()
+                });
+                console.log(`Episode ${episodeId} IP unlock recorded for ${ip}.`);
+            } catch (error) {
+                console.error("Error recording IP unlock in Firebase:", error);
+                alert("An error occurred while trying to save IP unlock status.");
+            }
+        } else {
+            console.warn("Could not get public IP to record unlock status.");
+        }
 
         alert(`"${episodeDataStore[episodeId].title}" unlocked! Playing now.`);
 
@@ -177,7 +268,7 @@ function finishAdWatching(episodeId, adWindow = null) {
                 adWindow.close();
             } catch (e) {
                 console.warn("Could not close ad window:", e);
-                // alert("Please manually close the ad tab to continue."); // Can be annoying, use sparingly
+                // alert("Please manually close the ad tab to continue.");
             }
         }
 
@@ -190,7 +281,7 @@ function finishAdWatching(episodeId, adWindow = null) {
 
 // --- Real-time Data Loading ---
 // Added optional parameters for playing a specific episode after unlock
-function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdToPlay = null) {
+async function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdToPlay = null) { // Made async
     // Clear any active timers before re-rendering the list
     for (const timerId in activeTimers) {
         clearInterval(activeTimers[timerId]);
@@ -198,7 +289,7 @@ function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdToPlay =
     }
     currentlyCountingDownEpisodeId = null; // Reset current countdown
 
-    db.ref('episodes').on('value', function(snapshot) {
+    db.ref('episodes').on('value', async function(snapshot) { // Made async
         console.log("Firebase snapshot received:", snapshot.val());
         const episodesData = snapshot.val();
         window.episodeDataStore = episodesData; // Store globally for easy access
@@ -210,7 +301,7 @@ function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdToPlay =
             const firstEpisodeKey = episodeKeys[0];
             firstEpisodeUrl = episodesData[firstEpisodeKey]?.url;
 
-            episodeKeys.forEach(episodeId => {
+            for (const episodeId of episodeKeys) { // Changed to for...of to allow await inside loop
                 const episode = episodesData[episodeId];
                 if (episode && typeof episode.title === 'string' && typeof episode.url === 'string' && episode.title.trim() !== '' && episode.url.trim() !== '') {
                     const escapedTitle = episode.title.replace(/'/g, "\\'");
@@ -219,7 +310,9 @@ function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdToPlay =
                     // Each button needs a unique data-episode-id for easy lookup
                     const buttonAttributes = `class="episode-btn" data-episode-id="${episodeId}"`;
 
-                    if (episode.isFree || unlockedEpisodeIds.includes(episodeId)) {
+                    // Check if episode is free, OR in local storage unlocked list, OR IP unlocked
+                    const isIpUnlocked = await isEpisodeUnlockedByIP(episodeId); // Await IP unlock check
+                    if (episode.isFree || unlockedEpisodeIds.includes(episodeId) || isIpUnlocked) {
                         episodesListHtml += `
                             <div class="episode-container">
                                 <button ${buttonAttributes} onclick="playEpisode('${escapedUrl}')">${episode.title}</button>
@@ -238,7 +331,8 @@ function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdToPlay =
                 } else {
                     console.warn(`Skipping malformed or incomplete episode with ID: ${episodeId}`, episode);
                 }
-            });
+            } // End of for...of loop
+
             if (currentlyCountingDownEpisodeId === null && videoDisplayArea.style.display !== 'block') {
                 updatePlayerMessage("Select an Episode to Play", false);
             }
@@ -266,5 +360,6 @@ function loadEpisodesRealtime(playAfterUnlock = false, unlockedEpisodeIdToPlay =
 // Initial setup on DOMContentLoaded
 document.addEventListener('DOMContentLoaded', () => {
     updatePlayerMessage("Loading episodes...", false);
-    loadEpisodesRealtime(); // Initial load
+    // Call getPublicIP early to potentially cache it, then load episodes
+    getPublicIP().then(() => loadEpisodesRealtime()); 
 });
